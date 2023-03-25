@@ -13,10 +13,10 @@
         <EnableDefaultCssItems>false</EnableDefaultCssItems>
 
         <!-- Display name -->
-        <ApplicationTitle>VpnHood.Client.App.Cross</ApplicationTitle>
+        <ApplicationTitle>Phoenix VPN</ApplicationTitle>
 
         <!-- App Identifier -->
-        <ApplicationId>com.companyname.vpnhood.client.app.cross</ApplicationId>
+        <ApplicationId>org.vpcp.phoenix.vpn</ApplicationId>
         <ApplicationIdGuid>F83DEFCF-A75C-4455-93F3-40EFF6FD31FB</ApplicationIdGuid>
 
         <!-- Versions -->
