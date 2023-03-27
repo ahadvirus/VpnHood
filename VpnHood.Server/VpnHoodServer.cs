@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -11,8 +12,10 @@ using Microsoft.Extensions.Logging;
 using VpnHood.Common.Exceptions;
 using VpnHood.Common.JobController;
 using VpnHood.Common.Logging;
+using VpnHood.Common.Messaging;
 using VpnHood.Common.Net;
 using VpnHood.Common.Utils;
+using VpnHood.Server.Configurations;
 using VpnHood.Server.SystemInformation;
 
 namespace VpnHood.Server;
@@ -39,7 +42,7 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
 
         AccessServer = accessServer;
         SystemInfoProvider = options.SystemInfoProvider ?? new BasicSystemInfoProvider();
-        SessionManager = new SessionManager(accessServer, options.SocketFactory, options.Tracker);
+        SessionManager = new SessionManager(accessServer, options.NetFilter, options.SocketFactory, options.Tracker);
         JobSection = new JobSection(options.ConfigureInterval);
 
         _configureInterval = options.ConfigureInterval;
@@ -82,7 +85,7 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
 
     public async Task RunJob()
     {
-        if (_disposed) throw new ObjectDisposedException(VhLogger.FormatTypeName(this));
+        if (_disposed) throw new ObjectDisposedException(VhLogger.FormatType(this));
 
         if (State == ServerState.Waiting && _configureTask.IsCompleted)
         {
@@ -109,8 +112,13 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
             throw new Exception("Server has already started!");
 
         // Report current OS Version
-        VhLogger.Instance.LogInformation($"{GetType().Assembly.GetName().FullName}");
-        VhLogger.Instance.LogInformation($"OS: {SystemInfoProvider.GetSystemInfo()}");
+        VhLogger.Instance.LogInformation("Module: {Module}", GetType().Assembly.GetName().FullName);
+        VhLogger.Instance.LogInformation("OS: {OS}", SystemInfoProvider.GetSystemInfo());
+
+        // Report TcpBuffers
+        var tcpClient = new TcpClient();
+        VhLogger.Instance.LogInformation("DefaultTcpKernelSentBufferSize: {DefaultTcpKernelSentBufferSize}, DefaultTcpKernelReceiveBufferSize: {DefaultTcpKernelReceiveBufferSize}",
+            tcpClient.SendBufferSize, tcpClient.ReceiveBufferSize);
 
         // Configure
         State = ServerState.Waiting;
@@ -146,26 +154,37 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
 
             var publicIpV4 = serverInfo.PublicIpAddresses.SingleOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork);
             var publicIpV6 = serverInfo.PublicIpAddresses.SingleOrDefault(x => x.AddressFamily == AddressFamily.InterNetworkV6);
-            VhLogger.Instance.LogInformation($"Public IPv4: {VhLogger.Format(publicIpV4)}, Public IPv6: {VhLogger.Format(publicIpV6)}");
+            var isIpV6Supported = publicIpV6 != null || await IPAddressUtil.IsIpv6Supported();
+            VhLogger.Instance.LogInformation("Public IPv4: {IPv4}, Public IPv6: {IpV6}, IsV6Supported: {IsV6Supported}",
+                VhLogger.Format(publicIpV4), VhLogger.Format(publicIpV6), isIpV6Supported);
 
             // get configuration from access server
             VhLogger.Instance.LogTrace("Sending config request to the Access Server...");
             var serverConfig = await ReadConfig(serverInfo);
-            VhLogger.Instance.LogInformation($"ServerConfig: {JsonSerializer.Serialize(serverConfig, new JsonSerializerOptions { WriteIndented = true })}");
-            serverConfig.SessionOptions.TcpBufferSize = GetBestTcpBufferSize(serverInfo.TotalMemory, serverConfig.SessionOptions.TcpBufferSize);
             SessionManager.TrackingOptions = serverConfig.TrackingOptions;
             SessionManager.SessionOptions = serverConfig.SessionOptions;
-            JobSection.Interval = serverConfig.UpdateStatusInterval;
+            JobSection.Interval = serverConfig.UpdateStatusIntervalValue;
             _lastConfigCode = serverConfig.ConfigCode;
             ConfigMinIoThreads(serverConfig.MinCompletionPortThreads);
             ConfigMaxIoThreads(serverConfig.MaxCompletionPortThreads);
-            VhLogger.IsAnonymousMode = serverConfig.LogAnonymizer;
+            var allServerIps = serverInfo.PublicIpAddresses
+                .Concat(serverInfo.PrivateIpAddresses)
+                .Concat(serverConfig.TcpEndPoints?.Select(x => x.Address) ?? Array.Empty<IPAddress>());
+            ConfigNetFilter(SessionManager.NetFilter, _tcpHost, serverConfig.NetFilterOptions, allServerIps, isIpV6Supported);
+            VhLogger.IsAnonymousMode = serverConfig.LogAnonymizerValue;
 
             // starting the listeners
-            var verb = _tcpHost.IsStarted ? "Restarting" : "Starting";
-            VhLogger.Instance.LogInformation($"{verb} {VhLogger.FormatTypeName(_tcpHost)}...");
-            if (_tcpHost.IsStarted) await _tcpHost.Stop();
-            _tcpHost.Start(serverConfig.TcpEndPoints, publicIpV6 != null);
+            if (_tcpHost.IsStarted && !_tcpHost.TcpEndPoints.SequenceEqual(serverConfig.TcpEndPointsValue))
+            {
+                VhLogger.Instance.LogInformation($"TcpEndPoints has changed. Stopping {VhLogger.FormatType(_tcpHost)}...");
+                await _tcpHost.Stop();
+            }
+
+            if (!_tcpHost.IsStarted)
+            {
+                VhLogger.Instance.LogInformation($"Starting {VhLogger.FormatType(_tcpHost)}...");
+                _tcpHost.Start(serverConfig.TcpEndPointsValue);
+            }
 
             // set config status
             State = ServerState.Ready;
@@ -180,6 +199,20 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
             VhLogger.Instance.LogError(ex, $"Could not configure server! Retrying after {JobSection.Interval.TotalSeconds} seconds.");
             await _tcpHost.Stop();
         }
+    }
+
+    private static void ConfigNetFilter(INetFilter netFilter, TcpHost tcpHost, NetFilterOptions netFilterOptions, 
+        IEnumerable<IPAddress> privateAddresses, bool isIpV6Supported)
+    {
+        // assign to workers
+        tcpHost.NetFilterIncludeIpRanges = netFilterOptions.GetFinalIncludeIpRanges().ToArray();
+        tcpHost.NetFilterPacketCaptureIncludeIpRanges = netFilterOptions.GetFinalPacketCaptureIncludeIpRanges().ToArray();
+        tcpHost.IsIpV6Supported = isIpV6Supported && !netFilterOptions.BlockIpV6Value;
+        netFilter.BlockedIpRanges = netFilterOptions.GetBlockedIpRanges().ToArray();
+
+        // exclude listening ip
+        if (!netFilterOptions.IncludeLocalNetworkValue)
+            netFilter.BlockedIpRanges = netFilter.BlockedIpRanges.Union(privateAddresses.Select(x => new IpRange(x))).ToArray();
     }
 
     private static int GetBestTcpBufferSize(long? totalMemory, int? configValue)
@@ -198,20 +231,31 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
 
     private async Task<ServerConfig> ReadConfig(ServerInfo serverInfo)
     {
+        var serverConfig = await ReadConfigImpl(serverInfo);
+        serverConfig.SessionOptions.TcpBufferSize = GetBestTcpBufferSize(serverInfo.TotalMemory, serverConfig.SessionOptions.TcpBufferSize);
+        serverConfig.ApplyDefaults();
+        VhLogger.Instance.LogInformation($"RemoteConfig: {JsonSerializer.Serialize(serverConfig, new JsonSerializerOptions { WriteIndented = true })}");
+
+        if (_config != null)
+        {
+            _config.ConfigCode = serverConfig.ConfigCode;
+            serverConfig.Merge(_config);
+            VhLogger.Instance.LogWarning("Remote configuration has been overwritten by the local settings.");
+            VhLogger.Instance.LogInformation($"RemoteConfig: {JsonSerializer.Serialize(serverConfig, new JsonSerializerOptions { WriteIndented = true })}");
+        }
+
+        // override defaults
+
+        return serverConfig;
+    }
+
+    private async Task<ServerConfig> ReadConfigImpl(ServerInfo serverInfo)
+    {
         try
         {
             var serverConfig = await AccessServer.Server_Configure(serverInfo);
             try { await File.WriteAllTextAsync(_lastConfigFilePath, JsonSerializer.Serialize(serverConfig)); }
             catch { /* Ignore */ }
-
-            if (_config != null)
-            {
-                VhLogger.Instance.LogInformation($"RemoteConfig: {JsonSerializer.Serialize(serverConfig, new JsonSerializerOptions { WriteIndented = true })}");
-                VhLogger.Instance.LogWarning("Remote configuration has been overwritten by the local settings.");
-                _config.ConfigCode = serverConfig.ConfigCode;
-                return _config;
-            }
-
             return serverConfig;
         }
         catch (MaintenanceException)
@@ -221,7 +265,7 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
             {
                 if (File.Exists(_lastConfigFilePath))
                 {
-                    var ret = Util.JsonDeserialize<ServerConfig>(await File.ReadAllTextAsync(_lastConfigFilePath));
+                    var ret = VhUtil.JsonDeserialize<ServerConfig>(await File.ReadAllTextAsync(_lastConfigFilePath));
                     VhLogger.Instance.LogWarning("Last configuration has been loaded to report Maintenance mode.");
                     return ret;
                 }
@@ -249,8 +293,11 @@ public class VpnHoodServer : IAsyncDisposable, IDisposable, IJob
                 AvailableMemory = systemInfo.AvailableMemory,
                 CpuUsage = systemInfo.CpuUsage,
                 UsedMemory = Process.GetCurrentProcess().WorkingSet64,
-                TunnelSendSpeed = SessionManager.Sessions.Sum(x => x.Value.Tunnel.SendSpeed),
-                TunnelReceiveSpeed = SessionManager.Sessions.Sum(x => x.Value.Tunnel.ReceiveSpeed),
+                TunnelSpeed = new Traffic
+                {
+                    Sent = SessionManager.Sessions.Sum(x => x.Value.Tunnel.Speed.Sent),
+                    Received = SessionManager.Sessions.Sum(x => x.Value.Tunnel.Speed.Received),
+                },
                 ConfigCode = _lastConfigCode
             };
             return serverStatus;

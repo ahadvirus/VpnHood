@@ -11,7 +11,18 @@ namespace VpnHood.Common.Logging;
 public static class VhLogger
 {
     private static bool _isDiagnoseMode;
-    public static ILogger Instance { get; set; } = NullLogger.Instance;
+    private static ILogger _instance = NullLogger.Instance;
+
+    public static ILogger Instance
+    {
+        get => _instance;
+        set
+        {
+            _instance = value;
+            JobController.JobRunner.Default.Logger = value;
+        }
+    }
+
     public static bool IsAnonymousMode { get; set; } = true;
     public static bool IsDiagnoseMode
     {
@@ -54,15 +65,15 @@ public static class VhLogger
     public static string Format(IPAddress? ipAddress)
     {
         if (ipAddress == null) return "<null>";
-        return IsAnonymousMode ? Util.RedactIpAddress(ipAddress) : ipAddress.ToString();
+        return IsAnonymousMode ? VhUtil.RedactIpAddress(ipAddress) : ipAddress.ToString();
     }
 
-    public static string FormatTypeName(object? obj)
+    public static string FormatType(object? obj)
     {
         return obj?.GetType().Name ?? "<null>";
     }
 
-    public static string FormatTypeName<T>()
+    public static string FormatType<T>()
     {
         return typeof(T).Name;
     }

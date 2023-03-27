@@ -5,9 +5,9 @@ using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using PacketDotNet;
-using PacketDotNet.Ieee80211;
 using PacketDotNet.Utils;
 using VpnHood.Common.Logging;
+using VpnHood.Common.Net;
 using ProtocolType = PacketDotNet.ProtocolType;
 
 // ReSharper disable UnusedMember.Global
@@ -414,4 +414,26 @@ public static class PacketUtil
         return VhLogger.FormatIpPacket(ipPacket.ToString());
     }
 
+    public static IPEndPointPair GetPacketEndPoints(IPPacket ipPacket)
+    {
+        if (ipPacket.Protocol == ProtocolType.Tcp)
+        {
+            var tcpPacket = ExtractTcp(ipPacket);
+            return new IPEndPointPair(
+                new IPEndPoint(ipPacket.SourceAddress, tcpPacket.SourcePort), 
+                new IPEndPoint(ipPacket.DestinationAddress, tcpPacket.DestinationPort));
+        }
+        
+        if (ipPacket.Protocol == ProtocolType.Udp)
+        {
+            var udpPacket = ExtractUdp(ipPacket);
+            return new IPEndPointPair(
+                new IPEndPoint(ipPacket.SourceAddress, udpPacket.SourcePort),
+                new IPEndPoint(ipPacket.DestinationAddress, udpPacket.DestinationPort));
+        }
+
+        return new IPEndPointPair(
+            new IPEndPoint(ipPacket.SourceAddress, 0),
+            new IPEndPoint(ipPacket.DestinationAddress, 0));
+    }
 }

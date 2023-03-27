@@ -8,9 +8,9 @@ namespace VpnHood.Server;
 public class ServerInfo
 {
     [JsonConstructor]
-    public ServerInfo(Version version, 
+    public ServerInfo(Version version,
         Version environmentVersion,
-        IPAddress[] privateIpAddresses, 
+        IPAddress[] privateIpAddresses,
         IPAddress[] publicIpAddresses,
         ServerStatus status)
     {

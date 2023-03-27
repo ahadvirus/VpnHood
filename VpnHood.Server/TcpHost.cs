@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using VpnHood.Common.Exceptions;
 using VpnHood.Common.Logging;
 using VpnHood.Common.Messaging;
+using VpnHood.Common.Net;
 using VpnHood.Common.Utils;
 using VpnHood.Server.Exceptions;
 using VpnHood.Tunneling;
@@ -26,11 +27,14 @@ internal class TcpHost : IAsyncDisposable
     private readonly SessionManager _sessionManager;
     private readonly SslCertificateManager _sslCertificateManager;
     private readonly List<TcpListener> _tcpListeners = new();
-    private bool _isIpV6Supported;
     private Task? _startTask;
     private bool _disposed;
 
+    public bool IsIpV6Supported { get; set; }
+    public IpRange[]? NetFilterPacketCaptureIncludeIpRanges { get; set; }
+    public IpRange[]? NetFilterIncludeIpRanges { get; set; }
     public bool IsStarted { get; private set; }
+    public IPEndPoint[] TcpEndPoints { get; private set; } = Array.Empty<IPEndPoint>();
 
     public TcpHost(SessionManager sessionManager, SslCertificateManager sslCertificateManager)
     {
@@ -38,7 +42,7 @@ internal class TcpHost : IAsyncDisposable
         _sessionManager = sessionManager;
     }
 
-    public void Start(IPEndPoint[] tcpEndPoints, bool isIpV6Supported)
+    public void Start(IPEndPoint[] tcpEndPoints)
     {
         if (_disposed) throw new ObjectDisposedException(GetType().Name);
         if (IsStarted) throw new Exception($"{nameof(TcpHost)} is already Started!");
@@ -47,7 +51,6 @@ internal class TcpHost : IAsyncDisposable
         _cancellationTokenSource = new CancellationTokenSource();
         var cancellationToken = _cancellationTokenSource.Token;
         IsStarted = true;
-        _isIpV6Supported = isIpV6Supported;
 
         try
         {
@@ -56,7 +59,7 @@ internal class TcpHost : IAsyncDisposable
             {
                 foreach (var tcpEndPoint in tcpEndPoints)
                 {
-                    VhLogger.Instance.LogInformation($"Start listening on {VhLogger.Format(tcpEndPoint)}");
+                    VhLogger.Instance.LogInformation("Start listening on TcpEndPoint: {TcpEndPoint}", VhLogger.Format(tcpEndPoint));
                     cancellationToken.ThrowIfCancellationRequested();
                     var tcpListener = new TcpListener(tcpEndPoint);
                     tcpListener.Start();
@@ -64,6 +67,8 @@ internal class TcpHost : IAsyncDisposable
                     tasks.Add(ListenTask(tcpListener, cancellationToken));
                 }
             }
+
+            TcpEndPoints = tcpEndPoints;
             _startTask = Task.WhenAll(tasks);
         }
         catch
@@ -251,9 +256,7 @@ internal class TcpHost : IAsyncDisposable
         // check request version
         var version = buffer[0];
         if (version != 1)
-        {
             throw new NotSupportedException("The request version is not supported!");
-        }
 
         // read request code
         var requestCode = (RequestCode)buffer[1];
@@ -280,7 +283,7 @@ internal class TcpHost : IAsyncDisposable
                 break;
 
             default:
-                throw new NotSupportedException("Unknown requestCode!");
+                throw new NotSupportedException($"Unknown requestCode. requestCode: {requestCode}");
         }
     }
 
@@ -306,14 +309,14 @@ internal class TcpHost : IAsyncDisposable
                 "This client is outdated and not supported anymore! Please update your app.");
 
         // Report new session
-        var clientIp = _sessionManager.TrackingOptions.TrackClientIp ? VhLogger.Format(ipEndPointPair.RemoteEndPoint.Address) : "*";
+        var clientIp = _sessionManager.TrackingOptions.TrackClientIpValue ? VhLogger.Format(ipEndPointPair.RemoteEndPoint.Address) : "*";
         VhLogger.Instance.LogInformation(GeneralEventId.SessionTrack,
             "SessionId: {SessionId-5}\t{Mode,-5}\tTokenId: {TokenId}\tClientCount: {ClientCount,-3}\tClientId: {ClientId}\tClientIp: {ClientIp-15}\tVersion: {Version}\tOS: {OS}",
             VhLogger.FormatSessionId(session.SessionId), "New", VhLogger.FormatId(request.TokenId), session.SessionResponse.AccessUsage?.ActiveClientCount, VhLogger.FormatId(request.ClientInfo.ClientId), clientIp, request.ClientInfo.ClientVersion, UserAgentParser.GetOperatingSystem(request.ClientInfo.UserAgent));
         VhLogger.Instance.LogInformation(GeneralEventId.Session, "SessionId: {SessionId}, Agent: {Agent}", VhLogger.FormatSessionId(session.SessionId), request.ClientInfo.UserAgent);
 
         //tracking
-        if (_sessionManager.TrackingOptions.IsEnabled())
+        if (_sessionManager.TrackingOptions.IsEnabled)
         {
             VhLogger.Instance.LogInformation(GeneralEventId.Track,
                 "{Proto}; SessionId {SessionId}; TokenId {TokenId}; ClientIp {clientIp}".Replace("; ", "\t"),
@@ -336,7 +339,9 @@ internal class TcpHost : IAsyncDisposable
             AccessUsage = sessionResponse.AccessUsage,
             MaxDatagramChannelCount = session.Tunnel.MaxDatagramChannelCount,
             ClientPublicAddress = ipEndPointPair.RemoteEndPoint.Address,
-            IsIpV6Supported = _isIpV6Supported,
+            IncludeIpRanges = NetFilterIncludeIpRanges,
+            PacketCaptureIncludeIpRanges = NetFilterPacketCaptureIncludeIpRanges,
+            IsIpV6Supported = IsIpV6Supported,
             ErrorCode = SessionErrorCode.Ok
         };
         await StreamUtil.WriteJsonAsync(tcpClientStream.Stream, helloResponse, cancellationToken);
@@ -369,7 +374,7 @@ internal class TcpHost : IAsyncDisposable
 
     private async Task ProcessBye(TcpClientStream tcpClientStream, CancellationToken cancellationToken)
     {
-        VhLogger.Instance.LogTrace(GeneralEventId.StreamChannel, $"Reading the {RequestCode.Bye} request ...");
+        VhLogger.Instance.LogTrace(GeneralEventId.TcpProxyChannel, $"Reading the {RequestCode.Bye} request ...");
         var request = await StreamUtil.ReadJsonAsync<RequestBase>(tcpClientStream.Stream, cancellationToken);
 
         // finding session
@@ -383,29 +388,18 @@ internal class TcpHost : IAsyncDisposable
 
     private async Task ProcessTcpDatagramChannel(TcpClientStream tcpClientStream, CancellationToken cancellationToken)
     {
-        VhLogger.Instance.LogTrace(GeneralEventId.StreamChannel, $"Reading the {nameof(TcpDatagramChannelRequest)} ...");
+        VhLogger.Instance.LogTrace(GeneralEventId.TcpProxyChannel, $"Reading the {nameof(TcpDatagramChannelRequest)} ...");
         var request = await StreamUtil.ReadJsonAsync<TcpDatagramChannelRequest>(tcpClientStream.Stream, cancellationToken);
 
         // finding session
         using var scope = VhLogger.Instance.BeginScope($"SessionId: {VhLogger.FormatSessionId(request.SessionId)}");
         var session = await _sessionManager.GetSession(request, tcpClientStream.IpEndPointPair);
-
-        // send OK reply
-        await StreamUtil.WriteJsonAsync(tcpClientStream.Stream, session.SessionResponse, cancellationToken);
-
-        // Disable UdpChannel
-        session.UseUdpChannel = false;
-
-        // add channel
-        VhLogger.Instance.LogTrace(GeneralEventId.DatagramChannel, $"Creating a {nameof(TcpDatagramChannel)} channel. SessionId: {VhLogger.FormatSessionId(session.SessionId)}");
-        var channel = new TcpDatagramChannel(tcpClientStream);
-        try { session.Tunnel.AddChannel(channel); }
-        catch { channel.Dispose(); throw; }
+        await session.ProcessTcpDatagramChannelRequest(tcpClientStream, cancellationToken);
     }
 
     private async Task ProcessTcpProxyChannel(TcpClientStream tcpClientStream, CancellationToken cancellationToken)
     {
-        VhLogger.Instance.LogInformation(GeneralEventId.StreamChannel, $"Reading the {nameof(TcpProxyChannelRequest)} ...");
+        VhLogger.Instance.LogInformation(GeneralEventId.TcpProxyChannel, $"Reading the {nameof(TcpProxyChannelRequest)} ...");
         var request = await StreamUtil.ReadJsonAsync<TcpProxyChannelRequest>(tcpClientStream.Stream, cancellationToken);
 
         // find session

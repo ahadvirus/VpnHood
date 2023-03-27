@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using VpnHood.Common.Logging;
 using VpnHood.Common.Messaging;
 using VpnHood.Server;
+using VpnHood.Server.Configurations;
 using VpnHood.Server.Messaging;
 using VpnHood.Server.Providers.HttpAccessServerProvider;
 using VpnHood.Tunneling;
@@ -63,14 +64,14 @@ public class TestAccessServer : IAccessServer
         return _httpAccessServer.Session_Create(sessionRequestEx);
     }
 
-    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, Traffic traffic)
     {
-        return _httpAccessServer.Session_AddUsage(sessionId, usageInfo);
+        return _httpAccessServer.Session_AddUsage(sessionId, traffic);
     }
 
-    public Task<SessionResponseBase> Session_Close(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_Close(uint sessionId, Traffic traffic)
     {
-        return _httpAccessServer.Session_Close(sessionId, usageInfo);
+        return _httpAccessServer.Session_Close(sessionId, traffic);
     }
 
     public Task<byte[]> GetSslCertificateData(IPEndPoint hostEndPoint)

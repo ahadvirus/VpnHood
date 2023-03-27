@@ -1,3 +1,55 @@
+# v2.8.361
+### Server
+* Feature: Enable hot reconfig for VpnHood Server TCP listener to avoid unnecessary restarts on unchanged endpoints
+* Update: Replace AllowIpV6 to BlockIpV6
+* Update: Improve server security 
+
+# v2.8.360
+### Client
+* Fix: Used traffic was not displayed correctly
+
+### Server
+* Fix: Used traffic was not reported correctly
+
+# v2.7.357
+### Client
+* Fix: Windows: Too long filter expression error
+
+# v2.7.356
+### Client
+* Farture: Windows: Add "Open in Browser" item to system menu
+* Update: windows: ""Open in browser" if WebView is not initialized properly
+
+### Server
+* Farture: Merge Server Configuration
+* Fix: Setting TCP kernel buffer
+* Fix: Error in parsing IPNetwork as Range
+* Update: Move NetFilter event from log to track
+* Update: Set Send Kernel TCP buffer sizes
+* Update: Use 24h in filename in track archives
+
+# v2.7.350
+### Client
+* Feature: Follow server-supported networks by IP range
+* Update: Performance improvement
+* Windows: Fix Auto Updater
+
+### Server
+* Farture: Filter server local networks
+* Farture: Filter networks by IP ranges
+* Fix: Missing some NetProtector log
+* Fix: Windows: AutoUpdater
+* Security: Always block access to loopback addresses
+* Update: log file archive format
+
+# v2.6.346
+### Client
+* Update: Improve stability when using no UDP mode
+
+### Server
+* Feature: Improve stability by adding lifetime to TcpDatagarmChannel
+* Fix: IpV6 detection
+
 # v2.6.342
 ### Client
 * Fix: UDP port memory leak

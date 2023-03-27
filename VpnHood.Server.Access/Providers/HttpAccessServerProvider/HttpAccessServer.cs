@@ -10,6 +10,7 @@ using VpnHood.Common.Client;
 using VpnHood.Common.Exceptions;
 using VpnHood.Common.Messaging;
 using VpnHood.Common.Utils;
+using VpnHood.Server.Configurations;
 using VpnHood.Server.Messaging;
 
 namespace VpnHood.Server.Providers.HttpAccessServerProvider;
@@ -54,7 +55,7 @@ public class HttpAccessServer : ApiClientBase, IAccessServer
         {
             return await base.HttpSendAsync<T>(urlPart, parameters, request, cancellationToken);
         }
-        catch (Exception ex) when (Util.IsConnectionRefusedException(ex))
+        catch (Exception ex) when (VhUtil.IsConnectionRefusedException(ex))
         {
             IsMaintenanceMode = true;
             throw new MaintenanceException();
@@ -85,7 +86,7 @@ public class HttpAccessServer : ApiClientBase, IAccessServer
         return HttpGetAsync<SessionResponseEx>($"sessions/{sessionId}", parameters);
     }
 
-    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, Traffic traffic)
     {
         var parameters = new Dictionary<string, object?>
         {
@@ -93,10 +94,10 @@ public class HttpAccessServer : ApiClientBase, IAccessServer
             { "closeSession",  false}
         };
 
-        return HttpPostAsync<SessionResponseBase>($"sessions/{sessionId}/usage", parameters, usageInfo);
+        return HttpPostAsync<SessionResponseBase>($"sessions/{sessionId}/usage", parameters, traffic);
     }
 
-    public Task<SessionResponseBase> Session_Close(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_Close(uint sessionId, Traffic traffic)
     {
         var parameters = new Dictionary<string, object?>
         {
@@ -104,7 +105,7 @@ public class HttpAccessServer : ApiClientBase, IAccessServer
             { "closeSession",  true}
         };
 
-        return HttpPostAsync<SessionResponseBase>($"sessions/{sessionId}/usage", parameters, usageInfo);
+        return HttpPostAsync<SessionResponseBase>($"sessions/{sessionId}/usage", parameters, traffic);
     }
 
 

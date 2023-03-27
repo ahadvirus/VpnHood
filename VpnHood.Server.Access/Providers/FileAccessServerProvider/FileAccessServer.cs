@@ -13,6 +13,7 @@ using VpnHood.Common;
 using VpnHood.Common.Logging;
 using VpnHood.Common.Messaging;
 using VpnHood.Common.Utils;
+using VpnHood.Server.Configurations;
 using VpnHood.Server.Messaging;
 
 namespace VpnHood.Server.Providers.FileAccessServerProvider;
@@ -106,17 +107,17 @@ public class FileAccessServer : IAccessServer
         return SessionManager.GetSession(sessionId, accessItem, hostEndPoint);
     }
 
-    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_AddUsage(uint sessionId, Traffic traffic)
     {
-        return Session_AddUsage(sessionId, usageInfo, false);
+        return Session_AddUsage(sessionId, traffic, false);
     }
 
-    public Task<SessionResponseBase> Session_Close(uint sessionId, UsageInfo usageInfo)
+    public Task<SessionResponseBase> Session_Close(uint sessionId, Traffic traffic)
     {
-        return Session_AddUsage(sessionId, usageInfo, true);
+        return Session_AddUsage(sessionId, traffic, true);
     }
 
-    private async Task<SessionResponseBase> Session_AddUsage(uint sessionId, UsageInfo usageInfo, bool closeSession)
+    private async Task<SessionResponseBase> Session_AddUsage(uint sessionId, Traffic traffic, bool closeSession)
     {
         // find token
         var tokenId = SessionManager.TokenIdFromSessionId(sessionId);
@@ -128,8 +129,7 @@ public class FileAccessServer : IAccessServer
         if (accessItem == null)
             return new SessionResponseBase(SessionErrorCode.AccessError) { ErrorMessage = "Token does not exist." };
 
-        accessItem.AccessUsage.SentTraffic += usageInfo.SentTraffic;
-        accessItem.AccessUsage.ReceivedTraffic += usageInfo.ReceivedTraffic;
+        accessItem.AccessUsage.Traffic += traffic;
         await WriteAccessItemUsage(accessItem);
 
         if (closeSession)
@@ -255,7 +255,7 @@ public class FileAccessServer : IAccessServer
             return null;
 
         var json = await File.ReadAllTextAsync(fileName);
-        var accessItem = Util.JsonDeserialize<AccessItem>(json);
+        var accessItem = VhUtil.JsonDeserialize<AccessItem>(json);
         await ReadAccessItemUsage(accessItem);
         return accessItem;
     }
@@ -280,8 +280,7 @@ public class FileAccessServer : IAccessServer
             {
                 var json = await File.ReadAllTextAsync(fileName);
                 var accessItemUsage = JsonSerializer.Deserialize<AccessItemUsage>(json) ?? new AccessItemUsage();
-                accessItem.AccessUsage.ReceivedTraffic = accessItemUsage.ReceivedTraffic;
-                accessItem.AccessUsage.SentTraffic = accessItemUsage.SentTraffic;
+                accessItem.AccessUsage.Traffic = new Traffic { Sent = accessItemUsage.SentTraffic, Received = accessItemUsage.ReceivedTraffic };
             }
         }
         catch (Exception ex)
@@ -296,8 +295,8 @@ public class FileAccessServer : IAccessServer
         // write token info
         var accessItemUsage = new AccessItemUsage
         {
-            ReceivedTraffic = accessItem.AccessUsage.ReceivedTraffic,
-            SentTraffic = accessItem.AccessUsage.SentTraffic
+            ReceivedTraffic = accessItem.AccessUsage.Traffic.Received,
+            SentTraffic = accessItem.AccessUsage.Traffic.Sent
         };
         var json = JsonSerializer.Serialize(accessItemUsage);
 

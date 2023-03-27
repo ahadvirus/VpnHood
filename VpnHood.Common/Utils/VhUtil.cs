@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace VpnHood.Common.Utils;
 
-public static class Util
+public static class VhUtil
 {
     public static bool IsConnectionRefusedException(Exception ex)
     {
@@ -27,7 +27,7 @@ public static class Util
         return ex is ObjectDisposedException or IOException or SocketException;
     }
 
-    public static IPEndPoint GetFreeEndPoint(IPAddress ipAddress, int defaultPort = 0)
+    public static IPEndPoint GetFreeTcpEndPoint(IPAddress ipAddress, int defaultPort = 0)
     {
         try
         {
@@ -198,20 +198,24 @@ public static class Util
         return ipAddress.ToString();
     }
 
-    public static string FormatBytes(long size)
+    public static string FormatBytes(long size, bool use1024 = true)
     {
-        // Get absolute value
-        if (size >= 0x10000000000) // Terabyte
-            return ((double)(size >> 30) / 1024).ToString("0.## ") + "TB";
+        var kb = use1024 ? (long)1024 : 1000;
+        var mb = kb * kb;
+        var gb = mb * kb;
+        var tb = gb * kb;
 
-        if (size >= 0x40000000) // Gigabyte
-            return ((double)(size >> 20) / 1024).ToString("0.# ") + "GB";
+        if (size >= tb) // Terabyte
+            return (size / tb).ToString("0.## ") + "TB";
 
-        if (size >= 0x100000) // Megabyte
-            return ((double)(size >> 10) / 1024).ToString("0 ") + "MB";
+        if (size >= gb) // Gigabyte
+            return (size / gb).ToString("0.# ") + "GB";
 
-        if (size >= 1024) // Kilobyte
-            return ((double)size / 1024).ToString("0 ") + "KB";
+        if (size >= mb) // Megabyte
+            return (size / mb).ToString("0 ") + "MB";
+
+        if (size >= kb) // Kilobyte
+            return (size / kb).ToString("0 ") + "KB";
 
         if (size > 0) // Kilobyte
             return size.ToString("0 ") + "B";
@@ -241,4 +245,10 @@ public static class Util
         // Byte
         return bytes.ToString("0");
     }
+
+    public static bool IsInfinite(TimeSpan timeSpan)
+    {
+        return timeSpan == TimeSpan.MaxValue || timeSpan == Timeout.InfiniteTimeSpan;
+    }
+
 }

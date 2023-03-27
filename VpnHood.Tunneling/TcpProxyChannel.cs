@@ -6,39 +6,47 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using VpnHood.Common.JobController;
 using VpnHood.Common.Logging;
+using VpnHood.Common.Messaging;
 using VpnHood.Common.Utils;
 
 namespace VpnHood.Tunneling;
 
 public class TcpProxyChannel : IChannel, IJob
 {
-    private readonly int _orgStreamReadBufferSize;
+    private readonly int _orgStreamBufferSize;
     private readonly TcpClientStream _orgTcpClientStream;
-    private readonly int _tunnelStreamReadBufferSize;
+    private readonly int _tunnelStreamBufferSize;
     private readonly TcpClientStream _tunnelTcpClientStream;
     private const int BufferSizeDefault = 0x1000 * 4; //16k
     private const int BufferSizeMax = 0x14000;
     private const int BufferSizeMin = 0x1000;
     private bool _disposed;
 
+    public JobSection JobSection { get; }
+    public event EventHandler<ChannelEventArgs>? OnFinished;
+    public bool IsClosePending => false;
+    public bool Connected { get; private set; }
+    public Traffic Traffic { get; } = new ();
+    public DateTime LastActivityTime { get; private set; } = FastDateTime.Now;
+
     public TcpProxyChannel(TcpClientStream orgTcpClientStream, TcpClientStream tunnelTcpClientStream,
-        TimeSpan tcpTimeout, int? orgStreamReadBufferSize = BufferSizeMin, int? tunnelStreamReadBufferSize = BufferSizeMin)
+        TimeSpan tcpTimeout, int? orgStreamBufferSize = BufferSizeDefault, int? tunnelStreamBufferSize = BufferSizeDefault)
     {
         _orgTcpClientStream = orgTcpClientStream ?? throw new ArgumentNullException(nameof(orgTcpClientStream));
         _tunnelTcpClientStream = tunnelTcpClientStream ?? throw new ArgumentNullException(nameof(tunnelTcpClientStream));
         
         // validate buffer sizes
-        if (orgStreamReadBufferSize is 0 or null) orgStreamReadBufferSize = BufferSizeDefault;
-        if (tunnelStreamReadBufferSize is 0 or null) tunnelStreamReadBufferSize = BufferSizeDefault;
+        if (orgStreamBufferSize is 0 or null) orgStreamBufferSize = BufferSizeDefault;
+        if (tunnelStreamBufferSize is 0 or null) tunnelStreamBufferSize = BufferSizeDefault;
 
-        _orgStreamReadBufferSize = orgStreamReadBufferSize is >= BufferSizeMin and <= BufferSizeMax
-            ? orgStreamReadBufferSize.Value
-            : throw new ArgumentOutOfRangeException(nameof(orgStreamReadBufferSize), orgStreamReadBufferSize, 
+        _orgStreamBufferSize = orgStreamBufferSize is >= BufferSizeMin and <= BufferSizeMax
+            ? orgStreamBufferSize.Value
+            : throw new ArgumentOutOfRangeException(nameof(orgStreamBufferSize), orgStreamBufferSize, 
                 $"Value must be greater or equal than {BufferSizeMin} and less than {BufferSizeMax}.");
 
-        _tunnelStreamReadBufferSize = tunnelStreamReadBufferSize is >= BufferSizeMin and <= BufferSizeMax
-            ? tunnelStreamReadBufferSize.Value
-            : throw new ArgumentOutOfRangeException(nameof(tunnelStreamReadBufferSize), tunnelStreamReadBufferSize, 
+        _tunnelStreamBufferSize = tunnelStreamBufferSize is >= BufferSizeMin and <= BufferSizeMax
+            ? tunnelStreamBufferSize.Value
+            : throw new ArgumentOutOfRangeException(nameof(tunnelStreamBufferSize), tunnelStreamBufferSize, 
                 $"Value must be greater or equal than {BufferSizeMin} and less than {BufferSizeMax}");
 
         // We don't know about client or server delay, so lets pessimistic
@@ -49,21 +57,13 @@ public class TcpProxyChannel : IChannel, IJob
         JobRunner.Default.Add(this);
     }
 
-    public JobSection JobSection { get; }
-
-    public event EventHandler<ChannelEventArgs>? OnFinished;
-    public bool Connected { get; private set; }
-    public long SentByteCount { get; private set; }
-    public long ReceivedByteCount { get; private set; }
-    public DateTime LastActivityTime { get; private set; } = FastDateTime.Now;
-
     public async Task Start()
     {
         Connected = true;
         try
         {
-            var task1 = CopyToAsync(_tunnelTcpClientStream.Stream, _orgTcpClientStream.Stream, false, _tunnelStreamReadBufferSize, CancellationToken.None); // read
-            var task2 = CopyToAsync(_orgTcpClientStream.Stream, _tunnelTcpClientStream.Stream, true, _orgStreamReadBufferSize, CancellationToken.None); //write
+            var task1 = CopyToAsync(_tunnelTcpClientStream.Stream, _orgTcpClientStream.Stream, false, _tunnelStreamBufferSize, CancellationToken.None); // read
+            var task2 = CopyToAsync(_orgTcpClientStream.Stream, _tunnelTcpClientStream.Stream, true, _orgStreamBufferSize, CancellationToken.None); //write
             await Task.WhenAny(task1, task2);
         }
         finally
@@ -100,8 +100,8 @@ public class TcpProxyChannel : IChannel, IJob
             IsConnectionValid(_tunnelTcpClientStream.TcpClient.Client))
             return;
 
-        VhLogger.Instance.LogInformation(GeneralEventId.StreamChannel,
-            $"Disposing a {VhLogger.FormatTypeName(this)} due to its error state.");
+        VhLogger.Instance.LogInformation(GeneralEventId.TcpProxyChannel,
+            $"Disposing a {VhLogger.FormatType(this)} due to its error state.");
 
         Dispose();
     }
@@ -174,9 +174,9 @@ public class TcpProxyChannel : IChannel, IJob
 
             // calculate transferred bytes
             if (!isSendingOut)
-                ReceivedByteCount += bytesRead;
+                Traffic.Received += bytesRead;
             else
-                SentByteCount += bytesRead;
+                Traffic.Sent += bytesRead;
 
             // set LastActivityTime as some data delegated
             LastActivityTime = FastDateTime.Now;

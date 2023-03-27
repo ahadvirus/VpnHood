@@ -10,6 +10,7 @@ using VpnHood.Common.Messaging;
 using VpnHood.Common.Net;
 using VpnHood.Common.Trackers;
 using VpnHood.Common.Utils;
+using VpnHood.Server.Configurations;
 using VpnHood.Server.Exceptions;
 using VpnHood.Server.Messaging;
 using VpnHood.Tunneling;
@@ -23,15 +24,21 @@ public class SessionManager : IDisposable, IAsyncDisposable, IJob
     private readonly IAccessServer _accessServer;
     private readonly SocketFactory _socketFactory;
     private readonly ITracker? _tracker;
+    private bool _disposed;
 
+    public INetFilter NetFilter { get; }
     public JobSection JobSection { get; } = new(TimeSpan.FromMinutes(10));
     public string ServerVersion { get; }
     public ConcurrentDictionary<uint, Session> Sessions { get; } = new();
     public TrackingOptions TrackingOptions { get; set; } = new();
     public SessionOptions SessionOptions { get; set; } = new();
-    public SessionManager(IAccessServer accessServer, SocketFactory socketFactory, ITracker? tracker)
+    public SessionManager(IAccessServer accessServer, 
+        INetFilter netFilter, 
+        SocketFactory socketFactory, 
+        ITracker? tracker)
     {
         _accessServer = accessServer ?? throw new ArgumentNullException(nameof(accessServer));
+        NetFilter = netFilter;
         _socketFactory = socketFactory ?? throw new ArgumentNullException(nameof(socketFactory));
         _tracker = tracker;
         ServerVersion = typeof(SessionManager).Assembly.GetName().Version.ToString();
@@ -49,7 +56,6 @@ public class SessionManager : IDisposable, IAsyncDisposable, IJob
         DisposeAsync().GetAwaiter().GetResult();
     }
 
-    private bool _disposed;
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
@@ -62,7 +68,7 @@ public class SessionManager : IDisposable, IAsyncDisposable, IJob
     private async Task<Session> CreateSessionInternal(SessionResponse sessionResponse,
         IPEndPointPair ipEndPointPair, HelloRequest? helloRequest)
     {
-        var session = new Session(_accessServer, sessionResponse, _socketFactory,
+        var session = new Session(_accessServer, sessionResponse, NetFilter, _socketFactory,
             ipEndPointPair.LocalEndPoint, SessionOptions, TrackingOptions, helloRequest);
 
         // add to sessions
@@ -186,7 +192,7 @@ public class SessionManager : IDisposable, IAsyncDisposable, IJob
             return;
 
         // update all sessions status
-        var minSessionActivityTime = FastDateTime.Now - SessionOptions.Timeout;
+        var minSessionActivityTime = FastDateTime.Now - SessionOptions.TimeoutValue;
         var timeoutSessions = Sessions
             .Where(x => x.Value.IsDisposed || x.Value.LastActivityTime < minSessionActivityTime)
             .ToArray();
